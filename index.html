@@ -5,7 +5,7 @@
   <meta content="width=device-width,initial-scale=1" name="viewport">
   <meta content="no-referrer" name="referrer">
   <link href="data:image/x-icon;," rel="icon">
-  <title>ReynielTV - Clean IPTV</title>
+  <title>ReynielTV - Native HLS IPTV</title>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.2/controls.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
@@ -205,6 +205,16 @@
       margin-top:2px;
       font-size: 12px;
       color: var(--muted);
+    }
+    .player-badge{
+      background: rgba(97,218,251,.2);
+      border-radius: 20px;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      margin-left: 8px;
+      display: inline-block;
+      color: var(--accent);
     }
 
     .favorite-btn{
@@ -807,22 +817,23 @@
     </div>
   </div>
 
-  <!-- hls.js - para sa M3U8 channels -->
+  <!-- hls.js - fallback for older browsers, but primary is native HLS -->
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-  <!-- Shaka Player - para sa ibang video formats -->
+  <!-- Shaka Player - for non-M3U8 formats -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.2/shaka-player.compiled.js"></script>
   <script src="https://dbghelp.github.io/M3U8Interpreter.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.0.4/pako.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
   <script>
-    // Enhanced Mobile IPTV App - Smart Player Selector
-    // HLS.js for M3U8 files (like m3u8-player.net), Shaka for other formats
+    // Enhanced Mobile IPTV App - NATIVE HLS PRIORITY
+    // Uses browser's native HLS (MediaSource Extensions) for .m3u8 when available
+    // Falls back to hls.js only when native support is missing
     class EnhancedMobileIPTV {
       constructor() {
         this.channels = [];
         this.currentChannelIndex = 0;
-        this.playerType = null; // 'hlsjs' or 'shaka' or 'native'
+        this.playerType = null; // 'native', 'hlsjs', or 'shaka'
         this.hls = null;
         this.shakaPlayer = null;
         this.xmlepg = null;
@@ -843,6 +854,18 @@
         
         this.setupEventListeners();
         this.loadDefaultPlaylist();
+        
+        // Check native HLS support
+        this.checkNativeHlsSupport();
+      }
+      
+      checkNativeHlsSupport() {
+        const video = document.createElement('video');
+        // Native HLS support detection: canPlayType for application/vnd.apple.mpegurl
+        const nativeHls = video.canPlayType('application/vnd.apple.mpegurl') || 
+                          video.canPlayType('application/x-mpegURL');
+        console.log('Native HLS support:', nativeHls);
+        return !!nativeHls;
       }
 
       initializeShakaPlayer() {
@@ -1029,7 +1052,9 @@
         });
       }
 
-      // SMART PLAYER SELECTOR: HLS.js for M3U8, Shaka for others
+      // SMART PLAYER SELECTOR: 
+      // - M3U8: Use Native HLS (browser's built-in) when available, fallback to hls.js
+      // - Other formats: Use Shaka Player
       playChannel(index) {
         if (index < 0 || index >= this.channels.length) return;
 
@@ -1046,11 +1071,67 @@
         
         // Choose player based on URL format
         if (isM3u8) {
-          this.showToast(`🎬 ${channel.channelName} - Using HLS.js (M3U8)`);
-          this.tryPlayWithHlsJs(channel);
+          this.tryPlayM3U8WithNativeHls(channel);
         } else {
           this.showToast(`📹 ${channel.channelName} - Using Shaka Player`);
           this.tryPlayWithShaka(channel);
+        }
+      }
+
+      // PRIMARY: Try Native HLS for M3U8 files
+      tryPlayM3U8WithNativeHls(channel) {
+        const streamUrl = channel.manifestUrl;
+        const hasNativeHls = this.checkNativeHlsSupport();
+        
+        if (hasNativeHls) {
+          // Use browser's native HLS support (Safari, modern Edge, etc.)
+          this.playerType = 'native';
+          this.updateChannelStatus('Loading with Native HLS...');
+          this.showLoading(true);
+          
+          // Set source directly - browser will handle HLS natively
+          this.video.src = streamUrl;
+          this.video.load();
+          
+          this.video.addEventListener('canplay', () => {
+            this.showLoading(false);
+            this.updateChannelStatus('Playing (Native HLS)');
+            this.updateChannelInfo(channel.channelName);
+            this.updateFavoriteButton();
+            this.updateChannelList();
+            this.updateQuickChannels();
+            this.showToast(`🎬 ${channel.channelName} - Native HLS`);
+            
+            // Add badge to show native HLS is active
+            const statusDiv = document.getElementById('channel-status');
+            if (statusDiv && !statusDiv.querySelector('.player-badge')) {
+              statusDiv.innerHTML = 'Playing (Native HLS) <span class="player-badge">⚡ NATIVE</span>';
+            }
+          });
+          
+          this.video.addEventListener('error', (e) => {
+            console.error('Native HLS error:', e);
+            this.showLoading(false);
+            this.updateChannelStatus('Native HLS failed, trying fallback...');
+            // Fallback to hls.js if native fails
+            this.tryPlayWithHlsJs(channel);
+          });
+          
+          this.video.addEventListener('waiting', () => {
+            if (this.playerType === 'native') {
+              this.updateChannelStatus('Buffering...');
+            }
+          });
+          
+          this.video.play().catch(e => {
+            console.log('Autoplay prevented:', e);
+            this.updateChannelStatus('Tap play to start (Native HLS)');
+            this.showLoading(false);
+          });
+          
+        } else {
+          // No native HLS support, use hls.js
+          this.tryPlayWithHlsJs(channel);
         }
       }
 
@@ -1068,15 +1149,16 @@
           } catch(e) {}
         }
         
-        // Clear video source
+        // Clear video source and remove event listeners
+        this.video.pause();
         this.video.removeAttribute('src');
         this.video.load();
       }
 
-      // For M3U8 files - using hls.js (same as m3u8-player.net)
+      // Fallback for M3U8: using hls.js (for browsers without native HLS)
       tryPlayWithHlsJs(channel) {
         this.playerType = 'hlsjs';
-        this.updateChannelStatus('Loading with HLS.js (M3U8)...');
+        this.updateChannelStatus('Loading with hls.js...');
         this.showLoading(true);
         
         const streamUrl = channel.manifestUrl;
@@ -1099,11 +1181,12 @@
           
           this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
             this.showLoading(false);
-            this.updateChannelStatus('Playing (HLS.js)');
+            this.updateChannelStatus('Playing (hls.js)');
             this.updateChannelInfo(channel.channelName);
             this.updateFavoriteButton();
             this.updateChannelList();
             this.updateQuickChannels();
+            this.showToast(`🎬 ${channel.channelName} - hls.js`);
             
             this.video.play().catch(e => {
               console.log('Autoplay prevented:', e);
@@ -1137,19 +1220,13 @@
           
           this.video.addEventListener('playing', () => {
             if (this.playerType === 'hlsjs') {
-              this.updateChannelStatus('Playing (HLS.js)');
+              this.updateChannelStatus('Playing (hls.js)');
               this.showLoading(false);
             }
           });
           
-          this.video.addEventListener('waiting', () => {
-            if (this.playerType === 'hlsjs') {
-              this.updateChannelStatus('Buffering...');
-            }
-          });
-          
         } else {
-          this.updateChannelStatus('HLS.js not supported');
+          this.updateChannelStatus('HLS not supported');
           this.showToast('HLS not supported in this browser');
           this.showLoading(false);
         }
@@ -1262,7 +1339,13 @@
       }
 
       updateChannelStatus(status) {
-        document.getElementById('channel-status').textContent = status;
+        const statusDiv = document.getElementById('channel-status');
+        // Remove existing badge if we're setting a non-native status
+        if (!status.includes('Native') && statusDiv) {
+          const badge = statusDiv.querySelector('.player-badge');
+          if (badge) badge.remove();
+        }
+        statusDiv.textContent = status;
       }
 
       nextChannel() {
