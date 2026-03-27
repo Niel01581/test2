@@ -5,7 +5,7 @@
   <meta content="width=device-width,initial-scale=1" name="viewport">
   <meta content="no-referrer" name="referrer">
   <link href="data:image/x-icon;," rel="icon">
-  <title>ReynielTV - Native HLS IPTV</title>
+  <title>ReynielTV - Native HLS IPTV with CORS Proxy</title>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.2/controls.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
@@ -556,6 +556,26 @@
       outline:none;
     }
 
+    /* Proxy toggle switch */
+    .proxy-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+      padding: 10px;
+      background: rgba(255,255,255,.05);
+      border-radius: 12px;
+    }
+    .proxy-toggle label {
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .proxy-toggle input {
+      width: 40px;
+      height: 20px;
+      cursor: pointer;
+    }
+
     /* Toast */
     .toast{
       position: fixed;
@@ -707,7 +727,7 @@
         <div id="brand-circle">Reyniel<br>TV</div>
       </div>
 
-      <video id="video" controls playsinline>
+      <video id="video" controls playsinline crossorigin="anonymous">
         Your browser does not support the video tag.
       </video>
 
@@ -780,6 +800,19 @@
     </div>
 
     <div class="settings-option">
+      <label class="settings-label">CORS Proxy</label>
+      <div class="proxy-toggle">
+        <label for="cors-proxy-toggle">Enable CORS Proxy (for M3U8 streams)</label>
+        <input type="checkbox" id="cors-proxy-toggle" checked>
+      </div>
+      <select class="settings-select" id="proxy-select" style="margin-top: 8px;">
+        <option value="allorigins">All Origins Proxy</option>
+        <option value="corsanywhere">CORS Anywhere</option>
+        <option value="corsproxy">CORS Proxy.io</option>
+      </select>
+    </div>
+
+    <div class="settings-option">
       <label class="settings-label">Video Quality</label>
       <select class="settings-select" id="quality-select">
         <option value="auto">Auto</option>
@@ -808,16 +841,9 @@
         <option value="blue">Blue</option>
       </select>
     </div>
-
-    <div class="settings-option">
-      <label class="settings-label">Parental Controls</label>
-      <button style="width: 100%; padding: 10px; background: #ff6b35; color: white; border: none; border-radius: 14px; cursor: pointer;">
-        Enable PIN
-      </button>
-    </div>
   </div>
 
-  <!-- hls.js - fallback for older browsers, but primary is native HLS -->
+  <!-- hls.js - fallback for older browsers -->
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <!-- Shaka Player - for non-M3U8 formats -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.2/shaka-player.compiled.js"></script>
@@ -826,14 +852,12 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
   <script>
-    // Enhanced Mobile IPTV App - NATIVE HLS PRIORITY
-    // Uses browser's native HLS (MediaSource Extensions) for .m3u8 when available
-    // Falls back to hls.js only when native support is missing
+    // Enhanced Mobile IPTV App - WITH CORS PROXY SUPPORT
     class EnhancedMobileIPTV {
       constructor() {
         this.channels = [];
         this.currentChannelIndex = 0;
-        this.playerType = null; // 'native', 'hlsjs', or 'shaka'
+        this.playerType = null;
         this.hls = null;
         this.shakaPlayer = null;
         this.xmlepg = null;
@@ -842,6 +866,16 @@
         this.recentChannels = JSON.parse(localStorage.getItem('iptv_recent') || '[]');
         this.categories = {};
         this.currentCategory = 'all';
+        
+        // Proxy settings
+        this.useProxy = localStorage.getItem('use_proxy') !== 'false';
+        this.proxyType = localStorage.getItem('proxy_type') || 'allorigins';
+        
+        this.proxyUrls = {
+          allorigins: 'https://api.allorigins.win/raw?url=',
+          corsanywhere: 'https://cors-anywhere.herokuapp.com/',
+          corsproxy: 'https://corsproxy.io/?'
+        };
 
         this.initializeApp();
       }
@@ -849,22 +883,71 @@
       initializeApp() {
         this.video = document.getElementById('video');
         
-        // Initialize Shaka Player (for non-M3U8 formats)
+        // Initialize Shaka Player
         this.initializeShakaPlayer();
         
         this.setupEventListeners();
         this.loadDefaultPlaylist();
         
-        // Check native HLS support
-        this.checkNativeHlsSupport();
+        // Load proxy settings from localStorage
+        this.loadProxySettings();
       }
       
+      loadProxySettings() {
+        const proxyToggle = document.getElementById('cors-proxy-toggle');
+        const proxySelect = document.getElementById('proxy-select');
+        
+        if (proxyToggle) {
+          proxyToggle.checked = this.useProxy;
+          proxyToggle.addEventListener('change', (e) => {
+            this.useProxy = e.target.checked;
+            localStorage.setItem('use_proxy', this.useProxy);
+            this.showToast(`CORS Proxy ${this.useProxy ? 'Enabled' : 'Disabled'}`);
+          });
+        }
+        
+        if (proxySelect) {
+          proxySelect.value = this.proxyType;
+          proxySelect.addEventListener('change', (e) => {
+            this.proxyType = e.target.value;
+            localStorage.setItem('proxy_type', this.proxyType);
+            this.showToast(`Proxy changed to: ${this.getProxyName(this.proxyType)}`);
+          });
+        }
+      }
+      
+      getProxyName(type) {
+        const names = {
+          allorigins: 'All Origins',
+          corsanywhere: 'CORS Anywhere',
+          corsproxy: 'CORS Proxy.io'
+        };
+        return names[type] || type;
+      }
+      
+      getProxiedUrl(url) {
+        if (!this.useProxy) return url;
+        
+        // Don't proxy localhost or already proxied URLs
+        if (url.includes('localhost') || 
+            url.includes('127.0.0.1') ||
+            url.includes('allorigins') ||
+            url.includes('cors-anywhere') ||
+            url.includes('corsproxy.io')) {
+          return url;
+        }
+        
+        const proxyUrl = this.proxyUrls[this.proxyType];
+        if (proxyUrl) {
+          return proxyUrl + encodeURIComponent(url);
+        }
+        return url;
+      }
+
       checkNativeHlsSupport() {
         const video = document.createElement('video');
-        // Native HLS support detection: canPlayType for application/vnd.apple.mpegurl
         const nativeHls = video.canPlayType('application/vnd.apple.mpegurl') || 
                           video.canPlayType('application/x-mpegURL');
-        console.log('Native HLS support:', nativeHls);
         return !!nativeHls;
       }
 
@@ -880,11 +963,13 @@
         });
       }
 
-      // Check if URL is M3U8 format
       isM3u8Url(url) {
         if (!url) return false;
         const lowerUrl = url.toLowerCase();
-        return lowerUrl.includes('.m3u8') || lowerUrl.includes('application/x-mpegurl') || lowerUrl.includes('mpegurl');
+        return lowerUrl.includes('.m3u8') || 
+               lowerUrl.includes('application/x-mpegurl') || 
+               lowerUrl.includes('mpegurl') ||
+               lowerUrl.includes('.m3u');
       }
 
       async loadDefaultPlaylist() {
@@ -897,41 +982,51 @@
           this.showLoading(true);
           this.updateChannelStatus('Loading playlist...');
 
-          const response = await fetch(url);
+          const proxiedUrl = this.getProxiedUrl(url);
+          const response = await fetch(proxiedUrl);
+          
           if (response.ok) {
             const text = await response.text();
             this.parsePlaylist(text);
           } else {
             this.showToast('Failed to load playlist');
+            console.error('Playlist load failed:', response.status);
           }
         } catch (error) {
           console.error('Error loading playlist:', error);
-          this.showToast('Error loading playlist');
+          this.showToast('Error loading playlist. Try disabling proxy if enabled.');
         } finally {
           this.showLoading(false);
         }
       }
 
       parsePlaylist(content) {
-        const m3u8Interpreter = new M3U8Interpreter(content);
-        m3u8Interpreter.parse();
-        this.channels = m3u8Interpreter.getChannels();
+        try {
+          const m3u8Interpreter = new M3U8Interpreter(content);
+          m3u8Interpreter.parse();
+          this.channels = m3u8Interpreter.getChannels();
 
-        this.extractCategories();
+          this.extractCategories();
 
-        const urls = m3u8Interpreter.getUrlTvg();
-        if (urls && urls.length > 0) {
-          this.xmlepg = new XMLEPG();
-          this.xmlepg.setPlaylistChannels(this.channels);
-          this.xmlepg.load(urls);
-        }
+          const urls = m3u8Interpreter.getUrlTvg();
+          if (urls && urls.length > 0 && this.xmlepg) {
+            this.xmlepg = new XMLEPG();
+            this.xmlepg.setPlaylistChannels(this.channels);
+            this.xmlepg.load(urls);
+          }
 
-        this.updateCategoryTabs();
-        this.updateChannelList();
-        this.updateQuickChannels();
+          this.updateCategoryTabs();
+          this.updateChannelList();
+          this.updateQuickChannels();
 
-        if (this.channels.length > 0) {
-          this.playChannel(0);
+          if (this.channels.length > 0) {
+            this.playChannel(0);
+          }
+          
+          this.showToast(`Loaded ${this.channels.length} channels`);
+        } catch (error) {
+          console.error('Parse error:', error);
+          this.showToast('Error parsing playlist');
         }
       }
 
@@ -950,13 +1045,9 @@
 
       updateCategoryTabs() {
         const tabsContainer = document.getElementById('category-tabs');
-        const existingTabs = tabsContainer.querySelectorAll('.category-tab');
+        const existingTabs = tabsContainer.querySelectorAll('.category-tab:not([data-category="all"]):not([data-category="favorites"])');
         
-        existingTabs.forEach(tab => {
-          if (tab.dataset.category !== 'all' && tab.dataset.category !== 'favorites') {
-            tab.remove();
-          }
-        });
+        existingTabs.forEach(tab => tab.remove());
         
         Object.keys(this.categories).forEach(category => {
           if (category !== 'all' && category !== 'favorites') {
@@ -1037,10 +1128,11 @@
           const isFavorite = this.favorites.includes(originalIndex);
           const isM3u8 = this.isM3u8Url(channel.manifestUrl);
           const badge = isM3u8 ? '<span style="font-size: 9px; background: #61dafb20; padding: 2px 6px; border-radius: 10px; margin-left: 4px;">HLS</span>' : '';
+          const proxyBadge = this.useProxy && isM3u8 ? '<span style="font-size: 9px; background: #8b5cf620; padding: 2px 6px; border-radius: 10px; margin-left: 4px;">PROXY</span>' : '';
 
           quickChannel.innerHTML = `
             <img src="${channel.tvgLogo}" alt="${channel.channelName}" class="channel-logo" onerror="this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiBmaWxsPSIjNjFkYWZiIi8+Cjx0ZXh0IHg9IjEyIiB5PSIxMiIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjEwIiBmaWxsPSIjMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSI+VFY8L3RleHQ+Cjwvc3ZnPgo='">
-            <span class="channel-name">${channel.channelName}${badge}</span>
+            <span class="channel-name">${channel.channelName}${badge}${proxyBadge}</span>
             ${isFavorite ? '<span class="channel-fav"><i class="fas fa-star"></i></span>' : ''}
           `;
 
@@ -1052,75 +1144,88 @@
         });
       }
 
-      // SMART PLAYER SELECTOR: 
-      // - M3U8: Use Native HLS (browser's built-in) when available, fallback to hls.js
-      // - Other formats: Use Shaka Player
       playChannel(index) {
         if (index < 0 || index >= this.channels.length) return;
 
         this.currentChannelIndex = index;
         const channel = this.channels[index];
-        const streamUrl = channel.manifestUrl;
+        let streamUrl = channel.manifestUrl;
         const isM3u8 = this.isM3u8Url(streamUrl);
+        
+        // Apply CORS proxy for M3U8 streams if enabled
+        if (isM3u8 && this.useProxy) {
+          streamUrl = this.getProxiedUrl(streamUrl);
+          this.showToast(`Using ${this.getProxyName(this.proxyType)} proxy for M3U8 stream`);
+        }
         
         // Clean up existing players
         this.destroyCurrentPlayer();
+        
+        // Set CORS attribute for video element
+        this.video.setAttribute('crossorigin', 'anonymous');
         
         // Add to recent channels
         this.addToRecent(index);
         
         // Choose player based on URL format
         if (isM3u8) {
-          this.tryPlayM3U8WithNativeHls(channel);
+          this.tryPlayM3U8WithNativeHls({...channel, manifestUrl: streamUrl});
         } else {
-          this.showToast(`📹 ${channel.channelName} - Using Shaka Player`);
-          this.tryPlayWithShaka(channel);
+          this.tryPlayWithShaka({...channel, manifestUrl: streamUrl});
         }
       }
 
-      // PRIMARY: Try Native HLS for M3U8 files
+      destroyCurrentPlayer() {
+        if (this.hls) {
+          this.hls.destroy();
+          this.hls = null;
+        }
+        
+        if (this.shakaPlayer) {
+          try {
+            this.shakaPlayer.unload();
+          } catch(e) {}
+        }
+        
+        this.video.pause();
+        this.video.removeAttribute('src');
+        this.video.load();
+      }
+
       tryPlayM3U8WithNativeHls(channel) {
         const streamUrl = channel.manifestUrl;
         const hasNativeHls = this.checkNativeHlsSupport();
         
         if (hasNativeHls) {
-          // Use browser's native HLS support (Safari, modern Edge, etc.)
           this.playerType = 'native';
           this.updateChannelStatus('Loading with Native HLS...');
           this.showLoading(true);
           
-          // Set source directly - browser will handle HLS natively
           this.video.src = streamUrl;
           this.video.load();
           
-          this.video.addEventListener('canplay', () => {
+          const playHandler = () => {
             this.showLoading(false);
             this.updateChannelStatus('Playing (Native HLS)');
             this.updateChannelInfo(channel.channelName);
             this.updateFavoriteButton();
             this.updateChannelList();
             this.updateQuickChannels();
-            this.showToast(`🎬 ${channel.channelName} - Native HLS`);
             
-            // Add badge to show native HLS is active
             const statusDiv = document.getElementById('channel-status');
             if (statusDiv && !statusDiv.querySelector('.player-badge')) {
               statusDiv.innerHTML = 'Playing (Native HLS) <span class="player-badge">⚡ NATIVE</span>';
             }
-          });
+            this.video.removeEventListener('canplay', playHandler);
+          };
+          
+          this.video.addEventListener('canplay', playHandler);
           
           this.video.addEventListener('error', (e) => {
             console.error('Native HLS error:', e);
             this.showLoading(false);
             this.updateChannelStatus('Native HLS failed, trying fallback...');
-            // Fallback to hls.js if native fails
             this.tryPlayWithHlsJs(channel);
-          });
-          
-          this.video.addEventListener('waiting', () => {
-            if (this.playerType === 'native') {
-              this.updateChannelStatus('Buffering...');
-            }
           });
           
           this.video.play().catch(e => {
@@ -1130,32 +1235,10 @@
           });
           
         } else {
-          // No native HLS support, use hls.js
           this.tryPlayWithHlsJs(channel);
         }
       }
 
-      destroyCurrentPlayer() {
-        // Destroy hls.js instance
-        if (this.hls) {
-          this.hls.destroy();
-          this.hls = null;
-        }
-        
-        // Unload shaka
-        if (this.shakaPlayer) {
-          try {
-            this.shakaPlayer.unload();
-          } catch(e) {}
-        }
-        
-        // Clear video source and remove event listeners
-        this.video.pause();
-        this.video.removeAttribute('src');
-        this.video.load();
-      }
-
-      // Fallback for M3U8: using hls.js (for browsers without native HLS)
       tryPlayWithHlsJs(channel) {
         this.playerType = 'hlsjs';
         this.updateChannelStatus('Loading with hls.js...');
@@ -1173,7 +1256,10 @@
             liveSyncDurationCount: 3,
             liveMaxLatencyDurationCount: 6,
             startLevel: -1,
-            debug: false
+            debug: false,
+            xhrSetup: (xhr, url) => {
+              xhr.withCredentials = false;
+            }
           });
           
           this.hls.loadSource(streamUrl);
@@ -1186,7 +1272,7 @@
             this.updateFavoriteButton();
             this.updateChannelList();
             this.updateQuickChannels();
-            this.showToast(`🎬 ${channel.channelName} - hls.js`);
+            this.showToast(`Playing: ${channel.channelName}`);
             
             this.video.play().catch(e => {
               console.log('Autoplay prevented:', e);
@@ -1232,31 +1318,12 @@
         }
       }
 
-      // For non-M3U8 files (MP4, TS, etc.) - using Shaka Player
       tryPlayWithShaka(channel) {
         this.playerType = 'shaka';
         this.updateChannelStatus('Loading with Shaka Player...');
         this.showLoading(true);
         
         const streamUrl = channel.manifestUrl;
-        
-        // Configure DRM if available
-        try {
-          let licenseKey = channel.licenseKey;
-          if (licenseKey && !Array.isArray(licenseKey)) {
-            licenseKey = JSON.parse(decodeURIComponent(licenseKey));
-          }
-          
-          if (licenseKey) {
-            const drmConfig = { drm: { clearKeys: {} } };
-            licenseKey.forEach(pair => {
-              drmConfig.drm.clearKeys[pair.keyId] = pair.key;
-            });
-            this.shakaPlayer.configure(drmConfig);
-          }
-        } catch(e) {
-          console.warn('DRM config error:', e);
-        }
         
         this.shakaPlayer.load(streamUrl).then(() => {
           this.showLoading(false);
@@ -1340,7 +1407,6 @@
 
       updateChannelStatus(status) {
         const statusDiv = document.getElementById('channel-status');
-        // Remove existing badge if we're setting a non-native status
         if (!status.includes('Native') && statusDiv) {
           const badge = statusDiv.querySelector('.player-badge');
           if (badge) badge.remove();
@@ -1411,6 +1477,50 @@
           this.video.volume = e.target.value / 100;
         });
         this.video.addEventListener('click', () => this.showVolumeControl());
+        
+        // Quality settings
+        document.getElementById('quality-select').addEventListener('change', (e) => {
+          const quality = e.target.value;
+          this.showToast(`Quality preference: ${quality.toUpperCase()}`);
+          if (this.hls && this.playerType === 'hlsjs') {
+            if (quality === 'auto') {
+              this.hls.currentLevel = -1;
+            } else {
+              // Quality levels implementation can be added here
+            }
+          }
+        });
+        
+        // Sleep timer
+        let sleepTimeout = null;
+        document.getElementById('sleep-timer').addEventListener('change', (e) => {
+          const minutes = parseInt(e.target.value);
+          if (sleepTimeout) clearTimeout(sleepTimeout);
+          if (minutes > 0) {
+            sleepTimeout = setTimeout(() => {
+              this.showToast('Sleep timer: Stopping playback');
+              this.destroyCurrentPlayer();
+            }, minutes * 60 * 1000);
+            this.showToast(`Sleep timer set for ${minutes} minutes`);
+          }
+        });
+        
+        // Theme
+        document.getElementById('theme-select').addEventListener('change', (e) => {
+          const theme = e.target.value;
+          const root = document.documentElement;
+          if (theme === 'light') {
+            root.style.setProperty('--bg', '#f0f2f5');
+            root.style.setProperty('--text', '#1a1a2e');
+            root.style.setProperty('--muted', '#4a4a6a');
+          } else if (theme === 'blue') {
+            root.style.setProperty('--bg', '#0a192f');
+            root.style.setProperty('--text', '#e6f1ff');
+          } else {
+            root.style.setProperty('--bg', '#0b0f17');
+            root.style.setProperty('--text', '#eaf0ff');
+          }
+        });
       }
 
       showChannelList() {
